@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>backtrack</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <div class="drag-region" data-tauri-drag-region></div>
+        <div class="search-wrap">
+          <input id="search" type="search" placeholder="Search everything  ⌘K" autocomplete="off" spellcheck="false" />
+          <div id="filters" class="filters">
+            <select id="f-source" class="filter" title="Source">
+              <option value="">All sources</option>
+              <option value="claude">Claude Code</option>
+              <option value="codex">Codex</option>
+            </select>
+            <select id="f-role" class="filter" title="Who spoke">
+              <option value="">Anyone</option>
+              <option value="user">You</option>
+              <option value="assistant">Agent</option>
+            </select>
+            <select id="f-project" class="filter" title="Project">
+              <option value="">All projects</option>
+            </select>
+            <select id="f-since" class="filter" title="When">
+              <option value="">Any time</option>
+              <option value="1">Today</option>
+              <option value="7">Last 7 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="90">Last 90 days</option>
+            </select>
+          </div>
+        </div>
+        <nav id="list" class="list" tabindex="0"></nav>
+      </aside>
+      <main id="main">
+        <div id="tabbar" class="tabbar"></div>
+        <div id="find" class="find hidden">
+          <input id="find-input" type="text" placeholder="Find in session" autocomplete="off" spellcheck="false" />
+          <span id="find-count" class="find-count">0/0</span>
+          <button id="find-prev" class="find-btn" title="Previous (⇧⏎)">↑</button>
+          <button id="find-next" class="find-btn" title="Next (⏎)">↓</button>
+          <button id="find-close" class="find-btn" title="Close (Esc)">✕</button>
+        </div>
+        <header id="transcript-head" data-tauri-drag-region></header>
+        <div id="transcript" class="transcript" tabindex="0"></div>
+        <footer id="hint" class="hint">
+          <span><kbd>⌘K</kbd> search</span>
+          <span><kbd>⌘F</kbd> find in session</span>
+          <span><kbd>j</kbd><kbd>k</kbd> messages</span>
+          <span><kbd>J</kbd><kbd>K</kbd> your messages</span>
+          <span><kbd>[</kbd><kbd>]</kbd> project sessions</span>
+          <span><kbd>⌃Tab</kbd> tabs</span>
+          <span><kbd>⌘+</kbd><kbd>⌘-</kbd> zoom</span>
+          <span><kbd>Tab</kbd> switch pane</span>
+          <span><kbd>?</kbd> all keys</span>
+        </footer>
+      </main>
+    </div>
+
+    <div id="legend" class="legend hidden">
+      <div class="legend-card">
+        <h2>Keyboard</h2>
+        <div class="legend-grid">
+          <kbd>⌘K</kbd><span>Search everything</span>
+          <kbd>⌘F</kbd><span>Find within open session</span>
+          <kbd>Tab</kbd><span>Switch between list and transcript</span>
+          <kbd>↑ / ↓</kbd><span>Move in list / messages</span>
+          <kbd>j / k</kbd><span>Next / previous message</span>
+          <kbd>J / K</kbd><span>Next / previous user message</span>
+          <kbd>→ / ⏎</kbd><span>Open selected (expand / open session)</span>
+          <kbd>←</kbd><span>Collapse project</span>
+          <kbd>[ / ]</kbd><span>Previous / next session in project</span>
+          <kbd>⌃Tab / ⌃⇧Tab</kbd><span>Next / previous tab</span>
+          <kbd>⌃PgDn / ⌃PgUp</kbd><span>Next / previous tab</span>
+          <kbd>⌘W</kbd><span>Close current tab</span>
+          <kbd>⌘+ / ⌘-</kbd><span>Increase / decrease text size</span>
+          <kbd>⌘0</kbd><span>Reset text size</span>
+          <kbd>⏎ / ⇧⏎</kbd><span>Next / previous find match</span>
+          <kbd>Esc</kbd><span>Close find · clear search · back out</span>
+          <kbd>?</kbd><span>Toggle this help</span>
+        </div>
+        <div class="legend-foot">Esc to close</div>
+      </div>
+    </div>
+  </body>
+</html>
