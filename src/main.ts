@@ -29,7 +29,7 @@ type SessionMeta = {
   last_at: string | null;
   msg_count: number;
 };
-type Message = { role: string; text: string; ts: string | null };
+type Message = { role: string; text: string; ts: string | null; phase?: string | null };
 type SessionDetail = { meta: SessionMeta; messages: Message[] };
 type SearchHit = { session: SessionMeta; msg_index: number; snippet: string; role: string };
 
@@ -44,6 +44,7 @@ const transcriptEl = $("#transcript");
 const headEl = $("#transcript-head");
 const tabbarEl = $("#tabbar");
 const searchEl = $<HTMLInputElement>("#search");
+const refreshBtn = $<HTMLButtonElement>("#refresh");
 const findBar = $("#find");
 const findInput = $<HTMLInputElement>("#find-input");
 const findCount = $("#find-count");
@@ -123,6 +124,7 @@ let msgIndex = -1;
 
 let marks: HTMLElement[] = []; // current highlight marks (find or global)
 let markIndex = -1;
+let refreshing = false;
 
 const FONT_SCALE_KEY = "bt-font-scale";
 const FONT_SCALE_MIN = 0.85;
@@ -259,6 +261,25 @@ function renderAgentText(text: string, terms: string[] = []): HTMLElement {
   return body;
 }
 
+function renderCommentaryGroup(messages: Message[]): HTMLElement {
+  const turn = el("div", "turn assistant commentary collapsed");
+  const summary = el("button", "commentary-summary") as HTMLButtonElement;
+  const preview = messages[0]?.text.replace(/\s+/g, " ").trim() ?? "";
+  summary.type = "button";
+  summary.append(
+    el("span", "commentary-caret", "›"),
+    el("span", "turn-role", messages.length > 1 ? `Worklog ${messages.length}` : "Worklog"),
+    el("span", "commentary-preview", preview),
+  );
+  const body = el("div", "commentary-group-body");
+  messages.forEach((msg) => body.append(renderAgentText(msg.text, globalTerms)));
+  turn.append(summary, body);
+  summary.addEventListener("click", () => {
+    turn.classList.toggle("collapsed");
+  });
+  return turn;
+}
+
 function markTerms(root: HTMLElement, terms: string[]) {
   const cleanTerms = terms.map((t) => t.trim()).filter(Boolean);
   if (!cleanTerms.length) return;
@@ -298,6 +319,19 @@ function badgeShort(source: string): string {
   return source === "claude" ? "CC" : "CX";
 }
 
+function resumeCommand(m: SessionMeta): string {
+  return m.source === "claude" ? `claude --resume ${m.id}` : `codex resume ${m.id}`;
+}
+
+async function copyText(text: string, btn: HTMLElement) {
+  await navigator.clipboard.writeText(text);
+  const original = btn.textContent;
+  btn.textContent = "Copied";
+  window.setTimeout(() => {
+    btn.textContent = original;
+  }, 900);
+}
+
 function currentListFilters() {
   const hasFilters = !!(fSource.value || fRole.value || fProject.value || fSince.value);
   return hasFilters ? buildFilters() : undefined;
@@ -310,6 +344,8 @@ async function loadData() {
     invoke<Project[]>("get_projects"),
     invoke<SessionMeta[]>("get_recent"),
   ]);
+  fProject.replaceChildren(el("option", undefined, "All projects"));
+  (fProject.firstElementChild as HTMLOptionElement).value = "";
   for (const p of projects) {
     const o = document.createElement("option");
     o.value = p.path;
@@ -319,6 +355,57 @@ async function loadData() {
   renderList();
   // Auto-open the most recent session so "what was I just doing" is immediate.
   if (allSessions.length) openSession(allSessions[0].id);
+}
+
+async function refreshHistories() {
+  if (refreshing) return;
+  refreshing = true;
+  refreshBtn.disabled = true;
+  refreshBtn.classList.add("refreshing");
+  const scrollTop = transcriptEl.scrollTop;
+  const activeBefore = activeTabId;
+  const selectedProject = fProject.value;
+  try {
+    await invoke<number>("reindex");
+    sessionsCache.clear();
+    [projects, allSessions] = await Promise.all([
+      invoke<Project[]>("get_projects"),
+      invoke<SessionMeta[]>("get_recent"),
+    ]);
+    fProject.replaceChildren(el("option", undefined, "All projects"));
+    (fProject.firstElementChild as HTMLOptionElement).value = "";
+    for (const p of projects) {
+      const o = document.createElement("option");
+      o.value = p.path;
+      o.textContent = p.name;
+      fProject.append(o);
+    }
+    if (selectedProject && projects.some((p) => p.path === selectedProject)) {
+      fProject.value = selectedProject;
+    } else if (selectedProject) {
+      fProject.value = "";
+      fProject.classList.remove("set");
+    }
+    for (let i = tabs.length - 1; i >= 0; i--) {
+      const detail = await invoke<SessionDetail | null>("get_transcript", { id: tabs[i].id });
+      if (detail) tabs[i].detail = detail;
+      else tabs.splice(i, 1);
+    }
+    if (activeBefore && tabs.some((t) => t.id === activeBefore)) {
+      switchTab(activeBefore);
+      transcriptEl.scrollTop = scrollTop;
+    } else if (tabs[0]) {
+      switchTab(tabs[0].id);
+    } else if (allSessions.length) {
+      await openSession(allSessions[0].id);
+    }
+    await runSearch();
+    renderTabBar();
+  } finally {
+    refreshBtn.disabled = false;
+    refreshBtn.classList.remove("refreshing");
+    refreshing = false;
+  }
 }
 
 function renderList(filters?: Record<string, string>) {
@@ -538,6 +625,12 @@ async function openSession(id: string, jumpMsg?: number) {
 function renderTranscript(d: SessionDetail) {
   const m = d.meta;
   headEl.innerHTML = "";
+  const copyId = el("button", "head-action", "ID") as HTMLButtonElement;
+  copyId.title = `Copy session ID: ${m.id}`;
+  copyId.onclick = () => copyText(m.id, copyId);
+  const copyResume = el("button", "head-action", "Resume") as HTMLButtonElement;
+  copyResume.title = `Copy resume command: ${resumeCommand(m)}`;
+  copyResume.onclick = () => copyText(resumeCommand(m), copyResume);
   headEl.append(
     el("h1", "head-title", m.title),
     (() => {
@@ -548,24 +641,46 @@ function renderTranscript(d: SessionDetail) {
         el("span", "head-proj", m.project_name),
         el("span", "head-date", fmtSessionRange(m.started_at, m.last_at)),
         el("span", "head-msgs", `${m.msg_count} messages`),
+        copyId,
+        copyResume,
       );
       return sub;
     })(),
   );
 
   transcriptEl.innerHTML = "";
-  d.messages.forEach((msg) => {
+  for (let i = 0; i < d.messages.length; i++) {
+    const msg = d.messages[i];
+    if (msg.role === "assistant" && msg.phase === "commentary") {
+      const group = [msg];
+      while (
+        d.messages[i + 1]?.role === "assistant" &&
+        d.messages[i + 1]?.phase === "commentary"
+      ) {
+        group.push(d.messages[++i]);
+      }
+      transcriptEl.append(renderCommentaryGroup(group));
+      continue;
+    }
     const turn = el("div", `turn ${msg.role}`);
     turn.append(
       el("div", "turn-role", msg.role === "user" ? "You" : agentLabel(m.source)),
       renderAgentText(msg.text, globalTerms),
     );
     transcriptEl.append(turn);
-  });
+  }
   transcriptEl.scrollTop = 0;
   msgIndex = -1;
   marks = globalTerms.length ? Array.from(transcriptEl.querySelectorAll("mark")) : [];
   markIndex = -1;
+}
+
+function toggleCurrentWorklog(): boolean {
+  const current = transcriptEl.children[msgIndex] as HTMLElement | undefined;
+  if (!current?.classList.contains("commentary")) return false;
+  current.classList.toggle("collapsed");
+  current.scrollIntoView({ block: "nearest" });
+  return true;
 }
 
 function focusMessage(i: number, block: ScrollLogicalPosition = "nearest") {
@@ -640,6 +755,7 @@ searchEl.addEventListener("input", () => {
     runSearch();
   }),
 );
+refreshBtn.addEventListener("click", () => refreshHistories());
 
 function buildFilters() {
   const f: Record<string, string> = {};
@@ -841,6 +957,11 @@ window.addEventListener("keydown", (e) => {
     openFind();
     return;
   }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "r") {
+    e.preventDefault();
+    refreshHistories();
+    return;
+  }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "w") {
     if (closeActiveTab()) e.preventDefault();
     return;
@@ -945,7 +1066,9 @@ window.addEventListener("keydown", (e) => {
       collapseNav();
     }
   } else {
-    if (e.key === "J") {
+    if (e.key.toLowerCase() === "w") {
+      if (toggleCurrentWorklog()) e.preventDefault();
+    } else if (e.key === "J") {
       e.preventDefault();
       moveUserMsg(1);
     } else if (e.key === "K") {

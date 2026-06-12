@@ -15,6 +15,8 @@ pub struct Message {
     pub role: String, // "user" | "assistant"
     pub text: String,
     pub ts: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -157,6 +159,16 @@ fn parse_claude_file(path: &Path) -> Option<Session> {
             Some(r @ ("user" | "assistant")) => r,
             _ => continue,
         };
+        let phase = if role == "assistant"
+            && d.get("message")
+                .and_then(|m| m.get("stop_reason"))
+                .and_then(|v| v.as_str())
+                == Some("tool_use")
+        {
+            Some("commentary".to_string())
+        } else {
+            None
+        };
         let content_val = match d.get("message").and_then(|m| m.get("content")) {
             Some(c) => c,
             None => continue,
@@ -180,6 +192,7 @@ fn parse_claude_file(path: &Path) -> Option<Session> {
             role: role.to_string(),
             text: text.to_string(),
             ts,
+            phase,
         });
     }
 
@@ -298,6 +311,10 @@ fn parse_codex_file(path: &Path) -> Option<Session> {
             Some(r @ ("user" | "assistant")) => r,
             _ => continue,
         };
+        let phase = payload
+            .get("phase")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let text = extract_codex_text(payload.get("content"));
         let text = text.trim();
         if text.is_empty() || is_noise(text) {
@@ -314,6 +331,7 @@ fn parse_codex_file(path: &Path) -> Option<Session> {
             role: role.to_string(),
             text: text.to_string(),
             ts,
+            phase,
         });
     }
 

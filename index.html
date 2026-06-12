@@ -12,7 +12,10 @@
       <aside id="sidebar">
         <div class="drag-region" data-tauri-drag-region></div>
         <div class="search-wrap">
-          <input id="search" type="search" placeholder="Search everything  ⌘K" autocomplete="off" spellcheck="false" />
+          <div class="search-row">
+            <input id="search" type="search" placeholder="Search everything  ⌘K" autocomplete="off" spellcheck="false" />
+            <button id="refresh" class="refresh-btn" title="Refresh histories (⌃R)">↻</button>
+          </div>
           <div id="filters" class="filters">
             <select id="f-source" class="filter" title="Source">
               <option value="">All sources</option>
@@ -54,10 +57,8 @@
           <span><kbd>⌘F</kbd> find in session</span>
           <span><kbd>j</kbd><kbd>k</kbd> messages</span>
           <span><kbd>J</kbd><kbd>K</kbd> your messages</span>
-          <span><kbd>[</kbd><kbd>]</kbd> project sessions</span>
+          <span><kbd>[</kbd><kbd>]</kbd> sessions</span>
           <span><kbd>⌃Tab</kbd> tabs</span>
-          <span><kbd>⌘+</kbd><kbd>⌘-</kbd> zoom</span>
-          <span><kbd>Tab</kbd> switch pane</span>
           <span><kbd>?</kbd> all keys</span>
         </footer>
       </main>
@@ -69,10 +70,12 @@
         <div class="legend-grid">
           <kbd>⌘K</kbd><span>Search everything</span>
           <kbd>⌘F</kbd><span>Find within open session</span>
+          <kbd>⌃R</kbd><span>Refresh histories</span>
           <kbd>Tab</kbd><span>Switch between list and transcript</span>
           <kbd>↑ / ↓</kbd><span>Move in list / messages</span>
           <kbd>j / k</kbd><span>Next / previous message</span>
           <kbd>J / K</kbd><span>Next / previous user message</span>
+          <kbd>w</kbd><span>Expand / collapse selected worklog</span>
           <kbd>→ / ⏎</kbd><span>Open selected (expand / open session)</span>
           <kbd>←</kbd><span>Collapse project</span>
           <kbd>[ / ]</kbd><span>Previous / next session in project</span>
