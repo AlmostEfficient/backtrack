@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/core";
@@ -266,6 +267,7 @@ function renderCommentaryGroup(messages: Message[]): HTMLElement {
   const summary = el("button", "commentary-summary") as HTMLButtonElement;
   const preview = messages[0]?.text.replace(/\s+/g, " ").trim() ?? "";
   summary.type = "button";
+  summary.setAttribute("aria-expanded", "false");
   summary.append(
     el("span", "commentary-caret", "›"),
     el("span", "turn-role", messages.length > 1 ? `Worklog ${messages.length}` : "Worklog"),
@@ -276,6 +278,7 @@ function renderCommentaryGroup(messages: Message[]): HTMLElement {
   turn.append(summary, body);
   summary.addEventListener("click", () => {
     turn.classList.toggle("collapsed");
+    summary.setAttribute("aria-expanded", String(!turn.classList.contains("collapsed")));
   });
   return turn;
 }
@@ -339,11 +342,7 @@ function currentListFilters() {
 
 // ---- browse view -----------------------------------------------------------
 
-async function loadData() {
-  [projects, allSessions] = await Promise.all([
-    invoke<Project[]>("get_projects"),
-    invoke<SessionMeta[]>("get_recent"),
-  ]);
+function updateProjectOptions(selectedProject = "") {
   fProject.replaceChildren(el("option", undefined, "All projects"));
   (fProject.firstElementChild as HTMLOptionElement).value = "";
   for (const p of projects) {
@@ -352,9 +351,56 @@ async function loadData() {
     o.textContent = p.name;
     fProject.append(o);
   }
+  if (selectedProject && projects.some((p) => p.path === selectedProject)) {
+    fProject.value = selectedProject;
+  } else if (selectedProject) {
+    fProject.classList.remove("set");
+  }
+}
+
+async function loadData() {
+  [projects, allSessions] = await Promise.all([
+    invoke<Project[]>("get_projects"),
+    invoke<SessionMeta[]>("get_recent"),
+  ]);
+  updateProjectOptions();
   renderList();
   // Auto-open the most recent session so "what was I just doing" is immediate.
   if (allSessions.length) openSession(allSessions[0].id);
+}
+
+async function syncIndexedViews(autoOpenLatest: boolean) {
+  const activeBefore = activeTabId;
+  const selectedProject = fProject.value;
+  const scrollTop = transcriptEl.scrollTop;
+  const wasNearBottom =
+    transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 80;
+
+  sessionsCache.clear();
+  const [nextProjects, nextRecent, details] = await Promise.all([
+    invoke<Project[]>("get_projects"),
+    invoke<SessionMeta[]>("get_recent"),
+    Promise.all(tabs.map((tab) => invoke<SessionDetail | null>("get_transcript", { id: tab.id }))),
+  ]);
+  projects = nextProjects;
+  allSessions = nextRecent;
+  updateProjectOptions(selectedProject);
+
+  tabs = tabs.flatMap((tab, index) => {
+    const detail = details[index];
+    return detail ? [{ ...tab, detail }] : [];
+  });
+
+  if (activeBefore && tabs.some((tab) => tab.id === activeBefore)) {
+    switchTab(activeBefore);
+    transcriptEl.scrollTop = wasNearBottom ? transcriptEl.scrollHeight : scrollTop;
+  } else if (tabs[0]) {
+    switchTab(tabs[0].id);
+  } else if (autoOpenLatest && allSessions[0]) {
+    await openSession(allSessions[0].id);
+  }
+  await runSearch();
+  renderTabBar();
 }
 
 async function refreshHistories() {
@@ -362,49 +408,41 @@ async function refreshHistories() {
   refreshing = true;
   refreshBtn.disabled = true;
   refreshBtn.classList.add("refreshing");
-  const scrollTop = transcriptEl.scrollTop;
-  const activeBefore = activeTabId;
-  const selectedProject = fProject.value;
   try {
     await invoke<number>("reindex");
-    sessionsCache.clear();
-    [projects, allSessions] = await Promise.all([
-      invoke<Project[]>("get_projects"),
-      invoke<SessionMeta[]>("get_recent"),
-    ]);
-    fProject.replaceChildren(el("option", undefined, "All projects"));
-    (fProject.firstElementChild as HTMLOptionElement).value = "";
-    for (const p of projects) {
-      const o = document.createElement("option");
-      o.value = p.path;
-      o.textContent = p.name;
-      fProject.append(o);
-    }
-    if (selectedProject && projects.some((p) => p.path === selectedProject)) {
-      fProject.value = selectedProject;
-    } else if (selectedProject) {
-      fProject.value = "";
-      fProject.classList.remove("set");
-    }
-    for (let i = tabs.length - 1; i >= 0; i--) {
-      const detail = await invoke<SessionDetail | null>("get_transcript", { id: tabs[i].id });
-      if (detail) tabs[i].detail = detail;
-      else tabs.splice(i, 1);
-    }
-    if (activeBefore && tabs.some((t) => t.id === activeBefore)) {
-      switchTab(activeBefore);
-      transcriptEl.scrollTop = scrollTop;
-    } else if (tabs[0]) {
-      switchTab(tabs[0].id);
-    } else if (allSessions.length) {
-      await openSession(allSessions[0].id);
-    }
-    await runSearch();
-    renderTabBar();
+    await syncIndexedViews(true);
+  } catch (error) {
+    console.error("Failed to refresh histories", error);
   } finally {
     refreshBtn.disabled = false;
     refreshBtn.classList.remove("refreshing");
     refreshing = false;
+    if (liveSyncQueued) {
+      liveSyncQueued = false;
+      void syncLiveHistories();
+    }
+  }
+}
+
+let liveSyncing = false;
+let liveSyncQueued = false;
+
+async function syncLiveHistories() {
+  if (refreshing || liveSyncing) {
+    liveSyncQueued = true;
+    return;
+  }
+  liveSyncing = true;
+  try {
+    await syncIndexedViews(false);
+  } catch (error) {
+    console.error("Failed to apply live history update", error);
+  } finally {
+    liveSyncing = false;
+    if (liveSyncQueued) {
+      liveSyncQueued = false;
+      void syncLiveHistories();
+    }
   }
 }
 
@@ -429,8 +467,16 @@ function renderList(filters?: Record<string, string>) {
     const head = el("div", isPinned ? "proj-head pinned" : "proj-head");
     head.dataset.nav = String(navItems.length);
     navItems.push({ kind: "project", path: p.path });
-    const pinBtn = el("span", "pin-btn", isPinned ? "◆" : "◇");
+    const pinBtn = el("button", "pin-btn", isPinned ? "◆" : "◇") as HTMLButtonElement;
+    pinBtn.type = "button";
+    pinBtn.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M8 4h8l-1 7 3 3H6l3-3-1-7Z" />
+        <path d="M12 14v6" />
+      </svg>
+    `;
     pinBtn.title = isPinned ? "Unpin" : "Pin to top";
+    pinBtn.setAttribute("aria-label", isPinned ? `Unpin ${p.name}` : `Pin ${p.name} to top`);
     pinBtn.onclick = (e) => { e.stopPropagation(); togglePin(p.path); };
     const count = sessionsCache.has(p.path) && projectSource
       ? sessionsCache.get(p.path)!.filter((s) => s.source === projectSource).length
@@ -442,6 +488,8 @@ function renderList(filters?: Record<string, string>) {
       const sourceSwitch = el("span", "proj-source-switch");
       for (const [value, label] of [["", "All"], ["claude", "CC"], ["codex", "CX"]] as const) {
         const btn = el("button", value === projectSource ? "proj-source active" : "proj-source", label);
+        (btn as HTMLButtonElement).type = "button";
+        btn.setAttribute("aria-pressed", String(value === projectSource));
         btn.title = value ? `Show only ${agentLabel(value)} sessions in this project` : "Show all sessions in this project";
         btn.onclick = (e) => {
           e.stopPropagation();
@@ -521,7 +569,9 @@ function renderTabBar() {
     t.title = title;
     const label = el("span", "tab-label", title);
     const close = el("button", "tab-close", "×");
+    (close as HTMLButtonElement).type = "button";
     close.title = "Close";
+    close.setAttribute("aria-label", `Close ${title}`);
     close.onclick = (e) => { e.stopPropagation(); closeTab(tab.id); };
     t.append(label, close);
     t.onclick = () => switchTab(tab.id);
@@ -1091,6 +1141,7 @@ window.addEventListener("keydown", (e) => {
 });
 
 legendEl.addEventListener("click", () => toggleLegend(false));
+legendEl.querySelector(".legend-card")?.addEventListener("click", (e) => e.stopPropagation());
 
 // Keep the keyboard zone in sync with where the user clicks.
 listEl.addEventListener("mousedown", () => (zone = "list"));
@@ -1109,4 +1160,7 @@ document.querySelectorAll<HTMLElement>("[data-tauri-drag-region]").forEach((el) 
 });
 
 applyFontScale();
+void listen<number>("histories-changed", () => {
+  void syncLiveHistories();
+});
 loadData();

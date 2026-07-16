@@ -442,6 +442,63 @@ pub fn build_index() -> Vec<Session> {
     sessions
 }
 
+pub fn history_roots() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    vec![home.join(".claude/projects"), home.join(".codex/sessions")]
+}
+
+pub enum FileUpdate {
+    Upsert(Session),
+    Remove(String),
+}
+
+pub fn read_file_update(path: &Path) -> Option<FileUpdate> {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+        return None;
+    }
+    if !path.exists() {
+        return path
+            .file_stem()
+            .map(|id| FileUpdate::Remove(id.to_string_lossy().to_string()));
+    }
+
+    let roots = history_roots();
+    if roots.first().is_some_and(|root| path.starts_with(root)) {
+        parse_claude_file(path).map(FileUpdate::Upsert)
+    } else if roots.get(1).is_some_and(|root| path.starts_with(root)) {
+        parse_codex_file(path).map(FileUpdate::Upsert)
+    } else {
+        None
+    }
+}
+
+pub fn apply_file_updates(sessions: &mut Vec<Session>, updates: Vec<FileUpdate>) -> usize {
+    let mut changed = 0;
+    for update in updates {
+        match update {
+            FileUpdate::Upsert(session) => {
+                if let Some(existing) = sessions.iter_mut().find(|item| item.id == session.id) {
+                    *existing = session;
+                } else {
+                    sessions.push(session);
+                }
+                changed += 1;
+            }
+            FileUpdate::Remove(id) => {
+                let before = sessions.len();
+                sessions.retain(|item| item.id != id);
+                changed += before - sessions.len();
+            }
+        }
+    }
+    if changed > 0 {
+        sessions.sort_by(|a, b| b.last_at.cmp(&a.last_at));
+    }
+    changed
+}
+
 pub fn projects(sessions: &[Session]) -> Vec<Project> {
     use std::collections::HashMap;
     let mut map: HashMap<&str, Project> = HashMap::new();
@@ -490,6 +547,29 @@ pub fn search(sessions: &[Session], query: &str, filters: &Filters, limit: usize
                 Some(la) if la.as_str() >= since.as_str() => {}
                 _ => continue,
             }
+        }
+        // Session IDs are metadata rather than message text. Treat a full or
+        // partial ID match as one session result instead of manufacturing a
+        // match for every message in the transcript.
+        let id = s.id.to_lowercase();
+        if terms.iter().all(|t| id.contains(t)) {
+            let target = s
+                .messages
+                .iter()
+                .enumerate()
+                .find(|(_, m)| filters.role.as_ref().is_none_or(|role| &m.role == role));
+            if let Some((msg_index, message)) = target {
+                hits.push(SearchHit {
+                    session: s.into(),
+                    msg_index,
+                    snippet: format!("Session ID: {}", s.id),
+                    role: message.role.clone(),
+                });
+            }
+            if hits.len() >= limit {
+                return hits;
+            }
+            continue;
         }
         // Quick reject: every term must appear somewhere in the session.
         if !terms.iter().all(|t| s.haystack.contains(t)) {
