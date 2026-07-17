@@ -67,6 +67,25 @@ async fn reindex(state: State<'_, AppState>) -> Result<usize, String> {
     Ok(count)
 }
 
+#[tauri::command]
+fn delete_session(state: State<AppState>, id: String) -> Result<(), String> {
+    let path = {
+        let idx = state.lock().map_err(|error| error.to_string())?;
+        idx.sessions
+            .iter()
+            .find(|session| session.id == id)
+            .map(|session| session.log_path.clone())
+            .ok_or_else(|| "Session not found".to_string())?
+    };
+    std::fs::remove_file(&path).map_err(|error| format!("Could not delete session: {error}"))?;
+    state
+        .lock()
+        .map_err(|error| error.to_string())?
+        .sessions
+        .retain(|session| session.id != id);
+    Ok(())
+}
+
 fn start_history_watcher(app: tauri::AppHandle) -> notify::Result<()> {
     let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
     let mut watcher = notify::recommended_watcher(move |event| {
@@ -150,7 +169,8 @@ pub fn run() {
             get_recent,
             get_transcript,
             search,
-            reindex
+            reindex,
+            delete_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

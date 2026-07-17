@@ -50,6 +50,14 @@ const findBar = $("#find");
 const findInput = $<HTMLInputElement>("#find-input");
 const findCount = $("#find-count");
 const legendEl = $("#legend");
+const sidebarResizer = $("#sidebar-resizer");
+const projectSearchEl = $<HTMLInputElement>("#project-search");
+const projectResultsEl = $("#project-results");
+const projectPickerEl = $("#project-picker");
+const projectPickerToggle = $<HTMLButtonElement>("#project-picker-toggle");
+const projectCountEl = $("#project-count");
+const deleteDialog = $<HTMLDialogElement>("#delete-dialog");
+const deleteErrorEl = $("#delete-error");
 
 const fSource = $<HTMLSelectElement>("#f-source");
 const fRole = $<HTMLSelectElement>("#f-role");
@@ -79,12 +87,48 @@ let allSessions: SessionMeta[] = []; // global recency order, for [ ] hops
 const sessionsCache = new Map<string, SessionMeta[]>();
 const expanded = new Set<string>();
 const pinned = new Set<string>(JSON.parse(localStorage.getItem("bt-pinned") ?? "[]") as string[]);
+const INCLUDED_PROJECTS_KEY = "bt-included-projects";
+const includedProjects = new Set<string>(
+  JSON.parse(localStorage.getItem(INCLUDED_PROJECTS_KEY) ?? "[]") as string[],
+);
 const projectSourceFilters = new Map<string, string>(
   JSON.parse(localStorage.getItem("bt-project-sources") ?? "[]") as [string, string][],
 );
 
 function savePin() {
   localStorage.setItem("bt-pinned", JSON.stringify([...pinned]));
+}
+
+function saveIncludedProjects() {
+  localStorage.setItem(INCLUDED_PROJECTS_KEY, JSON.stringify([...includedProjects]));
+}
+
+function includeProject(path: string) {
+  includedProjects.add(path);
+  saveIncludedProjects();
+  projectSearchEl.value = "";
+  setProjectPickerOpen(false);
+  renderProjectPicker();
+  renderList(currentListFilters());
+}
+
+function setProjectPickerOpen(open: boolean) {
+  projectPickerEl.classList.toggle("hidden", !open);
+  projectPickerToggle.setAttribute("aria-expanded", String(open));
+  projectPickerToggle.classList.toggle("active", open);
+  if (open) projectSearchEl.focus();
+  else {
+    projectSearchEl.value = "";
+    renderProjectPicker();
+  }
+}
+
+function excludeProject(path: string) {
+  includedProjects.delete(path);
+  expanded.delete(path);
+  saveIncludedProjects();
+  renderProjectPicker();
+  renderList(currentListFilters());
 }
 
 function togglePin(path: string) {
@@ -128,10 +172,20 @@ let markIndex = -1;
 let refreshing = false;
 
 const FONT_SCALE_KEY = "bt-font-scale";
+const SIDEBAR_WIDTH_KEY = "bt-sidebar-width";
 const FONT_SCALE_MIN = 0.85;
 const FONT_SCALE_MAX = 1.35;
 const FONT_SCALE_STEP = 0.08;
 let fontScale = Number(localStorage.getItem(FONT_SCALE_KEY) ?? "1");
+
+function setSidebarWidth(width: number) {
+  const max = Math.max(220, Math.min(520, window.innerWidth - 320));
+  const next = Math.round(Math.max(220, Math.min(max, width)));
+  document.documentElement.style.setProperty("--sidebar-width", `${next}px`);
+  sidebarResizer.setAttribute("aria-valuenow", String(next));
+  sidebarResizer.setAttribute("aria-valuemax", String(max));
+  localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next));
+}
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -183,6 +237,28 @@ function fmtSessionRange(start: string | null, end: string | null): string {
     startDate.getDate() === endDate.getDate();
   if (sameDay) return `${fmtExact(start)} - ${fmtTime(end)}`;
   return `${fmtExact(start)} - ${fmtExact(end)}`;
+}
+
+function fmtSessionListDate(iso: string | null): string {
+  if (!iso) return "Unknown date";
+  const date = new Date(iso);
+  if (isNaN(date.getTime())) return "Unknown date";
+  const now = new Date();
+  const dateDay = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const daysAgo = Math.round((today - dateDay) / 86400000);
+  const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+  if (daysAgo === 0) return `Today ${time}`;
+  if (daysAgo === 1) return `Yesterday ${time}`;
+  if (date.getFullYear() === now.getFullYear()) {
+    const day = date.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+    return `${day} ${time}`;
+  }
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function displayModel(model: string): string {
+  return model.replace(/^claude-/i, "");
 }
 
 function relDay(iso: string | null): string {
@@ -363,7 +439,12 @@ async function loadData() {
     invoke<Project[]>("get_projects"),
     invoke<SessionMeta[]>("get_recent"),
   ]);
+  if (!localStorage.getItem(INCLUDED_PROJECTS_KEY)) {
+    projects.slice(0, 5).forEach((project) => includedProjects.add(project.path));
+    saveIncludedProjects();
+  }
   updateProjectOptions();
+  renderProjectPicker();
   renderList();
   // Auto-open the most recent session so "what was I just doing" is immediate.
   if (allSessions.length) openSession(allSessions[0].id);
@@ -384,6 +465,7 @@ async function syncIndexedViews(autoOpenLatest: boolean) {
   ]);
   projects = nextProjects;
   allSessions = nextRecent;
+  renderProjectPicker();
   updateProjectOptions(selectedProject);
 
   tabs = tabs.flatMap((tab, index) => {
@@ -446,6 +528,60 @@ async function syncLiveHistories() {
   }
 }
 
+function renderProjectPicker() {
+  const query = projectSearchEl.value.trim().toLowerCase();
+  projectResultsEl.replaceChildren();
+  if (!query) {
+    projectResultsEl.classList.add("hidden");
+    return;
+  }
+  const matches = projects
+    .filter((project) => !includedProjects.has(project.path))
+    .filter((project) => `${project.name} ${project.path}`.toLowerCase().includes(query))
+    .slice(0, 8);
+  projectResultsEl.classList.remove("hidden");
+  if (!matches.length) {
+    projectResultsEl.append(el("div", "project-result-empty", "No matching projects"));
+    return;
+  }
+  for (const project of matches) {
+    const button = el("button", "project-result") as HTMLButtonElement;
+    button.type = "button";
+    button.append(
+      el("span", "project-result-copy", project.name),
+      el("span", "project-result-path", project.path),
+      el("span", "project-result-add", "Add"),
+    );
+    button.onclick = () => includeProject(project.path);
+    projectResultsEl.append(button);
+  }
+}
+
+let pendingDelete: SessionMeta | null = null;
+
+function requestSessionDelete(session: SessionMeta) {
+  pendingDelete = session;
+  deleteErrorEl.textContent = "";
+  $("#delete-title").textContent = `Delete “${session.title}”?`;
+  deleteDialog.showModal();
+}
+
+async function deletePendingSession() {
+  const session = pendingDelete;
+  if (!session) return;
+  try {
+    await invoke("delete_session", { id: session.id });
+    pendingDelete = null;
+    sessionsCache.delete(session.project_path);
+    const tabIndex = tabs.findIndex((tab) => tab.id === session.id);
+    if (tabIndex >= 0) closeTab(session.id);
+    await syncIndexedViews(false);
+  } catch (error) {
+    deleteErrorEl.textContent = String(error);
+    deleteDialog.showModal();
+  }
+}
+
 function renderList(filters?: Record<string, string>) {
   mode = "browse";
   listEl.innerHTML = "";
@@ -457,6 +593,7 @@ function renderList(filters?: Record<string, string>) {
     const bp = pinned.has(b.path) ? 0 : 1;
     return ap - bp;
   });
+  visible = visible.filter((p) => includedProjects.has(p.path) || filters?.project === p.path);
   if (filters?.source) visible = visible.filter((p) => p.sources.includes(filters.source!));
   if (filters?.project) visible = visible.filter((p) => p.path === filters.project);
 
@@ -499,7 +636,15 @@ function renderList(filters?: Record<string, string>) {
       }
       controls.append(sourceSwitch);
     }
-    controls.append(el("span", "proj-count", String(count)), pinBtn);
+    const removeBtn = el("button", "remove-project-btn", "×") as HTMLButtonElement;
+    removeBtn.type = "button";
+    removeBtn.title = "Remove from sidebar";
+    removeBtn.setAttribute("aria-label", `Remove ${p.name} from sidebar`);
+    removeBtn.onclick = (event) => {
+      event.stopPropagation();
+      excludeProject(p.path);
+    };
+    controls.append(el("span", "proj-count", String(count)), pinBtn, removeBtn);
     head.append(left, controls);
     head.onclick = () => toggleProject(p.path);
     listEl.append(head);
@@ -523,6 +668,12 @@ function renderList(filters?: Record<string, string>) {
       listEl.append(wrap);
     }
   }
+  projectCountEl.textContent = `${visible.length}`;
+  if (!visible.length) {
+    const empty = el("div", "project-empty");
+    empty.append(el("strong", undefined, "No projects included"), el("span", undefined, "Search above to add one."));
+    listEl.append(empty);
+  }
   syncNavSelection();
 }
 
@@ -531,13 +682,27 @@ function sessionRow(s: SessionMeta): HTMLElement {
   r.classList.toggle("active", s.id === activeId);
   r.dataset.id = s.id;
   const meta = el("div", "session-meta");
-  meta.append(
-    el("span", `badge ${s.source}`, badgeShort(s.source)),
-    ...(s.model ? [el("span", "session-model", s.model)] : []),
-    el("span", "session-date", fmtSessionRange(s.started_at, s.last_at)),
+  const identity = el("span", "session-identity");
+  identity.append(
+    el("span", "session-model", s.model ? displayModel(s.model) : agentLabel(s.source)),
     el("span", "session-msgs", `${s.msg_count} msgs`),
   );
-  r.append(el("div", "session-title", s.title), meta);
+  meta.append(
+    identity,
+    el("span", "session-date", fmtSessionListDate(s.last_at || s.started_at)),
+  );
+  const deleteBtn = el("button", "session-delete", "×") as HTMLButtonElement;
+  deleteBtn.type = "button";
+  deleteBtn.title = "Delete session";
+  deleteBtn.setAttribute("aria-label", `Delete session: ${s.title}`);
+  deleteBtn.onclick = (event) => {
+    event.stopPropagation();
+    requestSessionDelete(s);
+  };
+  const title = el("div", "session-title", s.title);
+  title.title = s.title;
+  meta.title = `${agentLabel(s.source)} · ${s.model || "Unknown model"} · ${fmtSessionRange(s.started_at, s.last_at)} · ${s.msg_count} messages`;
+  r.append(title, meta, deleteBtn);
   r.onclick = () => openSession(s.id);
   return r;
 }
@@ -687,7 +852,7 @@ function renderTranscript(d: SessionDetail) {
       const sub = el("div", "head-sub");
       sub.append(
         el("span", `badge ${m.source}`, m.source === "claude" ? "Claude Code" : "Codex"),
-        ...(m.model ? [el("span", "head-model", m.model)] : []),
+        ...(m.model ? [el("span", "head-model", displayModel(m.model))] : []),
         el("span", "head-proj", m.project_name),
         el("span", "head-date", fmtSessionRange(m.started_at, m.last_at)),
         el("span", "head-msgs", `${m.msg_count} messages`),
@@ -799,6 +964,21 @@ searchEl.addEventListener("input", () => {
   window.clearTimeout(searchTimer);
   searchTimer = window.setTimeout(runSearch, 130);
 });
+projectSearchEl.addEventListener("input", renderProjectPicker);
+projectSearchEl.addEventListener("focus", renderProjectPicker);
+projectSearchEl.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    setProjectPickerOpen(false);
+    projectPickerToggle.focus();
+  }
+});
+projectPickerToggle.addEventListener("click", () => {
+  setProjectPickerOpen(projectPickerToggle.getAttribute("aria-expanded") !== "true");
+});
+deleteDialog.addEventListener("close", () => {
+  if (deleteDialog.returnValue === "confirm") void deletePendingSession();
+  else pendingDelete = null;
+});
 [fSource, fRole, fProject, fSince].forEach((sel) =>
   sel.addEventListener("change", () => {
     sel.classList.toggle("set", !!sel.value);
@@ -849,7 +1029,7 @@ function renderHits(hits: SearchHit[]) {
     const top = el("div", "hit-top");
     top.append(
       el("span", `badge ${h.session.source}`, badgeShort(h.session.source)),
-      ...(h.session.model ? [el("span", "hit-model", h.session.model)] : []),
+      ...(h.session.model ? [el("span", "hit-model", displayModel(h.session.model))] : []),
       el("span", "hit-proj", h.session.project_name),
       el("span", "hit-date", relDay(h.session.last_at)),
       el("span", "hit-who", h.role === "user" ? "you" : "agent"),
@@ -1150,6 +1330,35 @@ transcriptEl.addEventListener("mousedown", () => {
   if (msgIndex < 0) focusMessage(0);
 });
 
+sidebarResizer.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  sidebarResizer.setPointerCapture(event.pointerId);
+  document.body.classList.add("resizing-sidebar");
+});
+sidebarResizer.addEventListener("pointermove", (event) => {
+  if (sidebarResizer.hasPointerCapture(event.pointerId)) setSidebarWidth(event.clientX);
+});
+sidebarResizer.addEventListener("pointerup", (event) => {
+  sidebarResizer.releasePointerCapture(event.pointerId);
+  document.body.classList.remove("resizing-sidebar");
+});
+sidebarResizer.addEventListener("pointercancel", () => {
+  document.body.classList.remove("resizing-sidebar");
+});
+sidebarResizer.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Home") return;
+  event.preventDefault();
+  event.stopPropagation();
+  const current = Number(sidebarResizer.getAttribute("aria-valuenow") ?? "328");
+  const step = event.shiftKey ? 32 : 8;
+  setSidebarWidth(event.key === "Home" ? 328 : current + (event.key === "ArrowRight" ? step : -step));
+});
+sidebarResizer.addEventListener("dblclick", () => setSidebarWidth(328));
+window.addEventListener("resize", () => {
+  setSidebarWidth(Number(sidebarResizer.getAttribute("aria-valuenow") ?? "328"));
+});
+
 // Wire up drag regions — data-tauri-drag-region alone requires Tauri's runtime
 // injection; explicit startDragging() is more reliable.
 const appWin = getCurrentWindow();
@@ -1160,6 +1369,7 @@ document.querySelectorAll<HTMLElement>("[data-tauri-drag-region]").forEach((el) 
 });
 
 applyFontScale();
+setSidebarWidth(Number(localStorage.getItem(SIDEBAR_WIDTH_KEY) ?? "328"));
 void listen<number>("histories-changed", () => {
   void syncLiveHistories();
 });

@@ -34,6 +34,8 @@ pub struct Session {
     pub messages: Vec<Message>,
     #[serde(skip)]
     pub haystack: String, // lowercased concatenation of all message text, for search
+    #[serde(skip)]
+    pub log_path: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -111,7 +113,11 @@ fn title_from(messages: &[Message]) -> String {
         .or_else(|| messages.first())
         .map(|m| m.text.as_str())
         .unwrap_or("");
-    let line = raw.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let line = raw
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     let mut t: String = line.chars().take(120).collect();
     if line.chars().count() > 120 {
         t.push('…');
@@ -144,7 +150,9 @@ fn parse_claude_file(path: &Path) -> Option<Session> {
             }
         }
         if d.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false)
-            || d.get("isSidechain").and_then(|v| v.as_bool()).unwrap_or(false)
+            || d.get("isSidechain")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
         {
             continue;
         }
@@ -153,6 +161,7 @@ fn parse_claude_file(path: &Path) -> Option<Session> {
                 .get("message")
                 .and_then(|m| m.get("model"))
                 .and_then(|v| v.as_str())
+                .filter(|value| !value.starts_with('<'))
                 .map(String::from);
         }
         let role = match d.get("type").and_then(|v| v.as_str()) {
@@ -181,7 +190,10 @@ fn parse_claude_file(path: &Path) -> Option<Session> {
         if text.is_empty() || is_noise(text) {
             continue;
         }
-        let ts = d.get("timestamp").and_then(|v| v.as_str()).map(String::from);
+        let ts = d
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         if first_ts.is_none() {
             first_ts = ts.clone();
         }
@@ -201,7 +213,16 @@ fn parse_claude_file(path: &Path) -> Option<Session> {
     }
     let id = path.file_stem()?.to_string_lossy().to_string();
     let pp = project_path.unwrap_or_else(|| "(unknown)".into());
-    Some(finalize(id, "claude", pp, messages, model, first_ts, last_ts))
+    Some(finalize(
+        id,
+        "claude",
+        pp,
+        messages,
+        model,
+        first_ts,
+        last_ts,
+        path.to_path_buf(),
+    ))
 }
 
 // Claude content is either a string (user) or an array of blocks; we keep only
@@ -320,7 +341,10 @@ fn parse_codex_file(path: &Path) -> Option<Session> {
         if text.is_empty() || is_noise(text) {
             continue;
         }
-        let ts = d.get("timestamp").and_then(|v| v.as_str()).map(String::from);
+        let ts = d
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         if first_ts.is_none() {
             first_ts = ts.clone();
         }
@@ -344,7 +368,16 @@ fn parse_codex_file(path: &Path) -> Option<Session> {
             .unwrap_or_default()
     });
     let pp = project_path.unwrap_or_else(|| "(unknown)".into());
-    Some(finalize(id, "codex", pp, messages, model, first_ts, last_ts))
+    Some(finalize(
+        id,
+        "codex",
+        pp,
+        messages,
+        model,
+        first_ts,
+        last_ts,
+        path.to_path_buf(),
+    ))
 }
 
 fn extract_codex_text(c: Option<&Value>) -> String {
@@ -377,6 +410,7 @@ fn finalize(
     model: Option<String>,
     first_ts: Option<String>,
     last_ts: Option<String>,
+    log_path: PathBuf,
 ) -> Session {
     let project_name = project_name_from_path(&project_path);
     let title = title_from(&messages);
@@ -398,6 +432,7 @@ fn finalize(
         msg_count,
         messages,
         haystack,
+        log_path,
     }
 }
 
@@ -523,7 +558,12 @@ pub fn projects(sessions: &[Session]) -> Vec<Project> {
     v
 }
 
-pub fn search(sessions: &[Session], query: &str, filters: &Filters, limit: usize) -> Vec<SearchHit> {
+pub fn search(
+    sessions: &[Session],
+    query: &str,
+    filters: &Filters,
+    limit: usize,
+) -> Vec<SearchHit> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return Vec::new();

@@ -63,11 +63,27 @@
           </div>
         </div>
         <div class="list-heading">
-          <span>Library</span>
-          <span>Projects</span>
+          <span>Your projects</span>
+          <span id="project-count"></span>
         </div>
         <nav id="list" class="list" tabindex="0"></nav>
+        <div id="project-picker" class="project-picker hidden">
+          <div class="project-picker-row">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" />
+              <path d="m16 16 4 4" />
+            </svg>
+            <input id="project-search" type="search" placeholder="Find a project to add" aria-label="Find a project to add" autocomplete="off" spellcheck="false" />
+          </div>
+          <div id="project-results" class="project-results hidden"></div>
+        </div>
+        <button id="project-picker-toggle" class="project-picker-toggle" type="button" aria-label="Add a project" aria-expanded="false" aria-controls="project-picker" title="Add a project">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+        </button>
       </aside>
+      <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-label="Resize project sidebar" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="520" aria-valuenow="328" tabindex="0" title="Drag to resize · Double-click to reset"></div>
       <main id="main">
         <div id="tabbar" class="tabbar"></div>
         <div id="find" class="find hidden">
@@ -87,6 +103,18 @@
         </footer>
       </main>
     </div>
+
+    <dialog id="delete-dialog" class="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-copy">
+      <form method="dialog" class="delete-card">
+        <h2 id="delete-title">Delete this session?</h2>
+        <p id="delete-copy">This permanently removes the conversation log from disk.</p>
+        <p id="delete-error" class="delete-error" role="alert"></p>
+        <div class="delete-actions">
+          <button value="cancel" class="dialog-btn" type="submit">Cancel</button>
+          <button id="delete-confirm" value="confirm" class="dialog-btn danger" type="submit">Delete session</button>
+        </div>
+      </form>
+    </dialog>
 
     <div id="legend" class="legend hidden" role="dialog" aria-modal="true" aria-labelledby="keyboard-title">
       <div class="legend-card">
